@@ -1,0 +1,56 @@
+server:
+  port: 9990
+spring:
+  thymeleaf:
+    cache: true
+    check-template: true
+    check-template-location: true
+    content-type: text/html
+    enabled: true
+    encoding: UTF-8
+    excluded-view-names: ''
+    mode: HTML5
+    prefix: classpath:/templates/
+    suffix: .html
+  redis:
+    host: localhost
+    port: 6379
+    password: ''
+    database: 0
+
+# 录音处理线程池配置
+recorder:
+  thread-pool:
+    size: 8  # 根据并发量调整，默认8个线程
+  file-monitor:
+    interval-seconds: 10  # 文件监控轮询间隔，默认10秒
+
+#spring:
+#  redis:
+#    password: 123456
+#    cluster:
+#      nodes: 10.255.144.115:7001,10.255.144.115:7002,10.255.144.115:7003,10.255.144.115:7004,10.255.144.115:7005,10.255.144.115:7006
+#      max-redirects: 3
+recorderNode:
+  info:
+    name: rec94
+    ip: 10.3.67.91
+  mcp:
+    path: D://record//
+  nas:
+    path: D://record//
+
+manager:
+  url: http://127.0.0.1:9999
+
+# 统一内容平台相关配置
+sunecm:
+  fms: mp3、wav
+  dmsName: ''
+  filePartName: IOC_P
+  modelCode: IOC
+  userName: tfcc
+  password: tfcc376
+  ip: 32.114.152.155
+  socketPort: 8023
+  httpPort: 7001
