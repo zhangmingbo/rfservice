@@ -6,11 +6,11 @@ import com.alibaba.fastjson.JSONObject;
 import com.sunyard.client.SunEcmClientApi;
 import com.sunyard.client.bean.*;
 import com.sunyard.client.impl.SunEcmClientSocketApiImpl;
-import com.sunyard.dmserver.bean.HeightQuery;
+import com.sunyard.ecm.server.bean.HeightQuery;
 import com.sunyard.util.OptionKey;
 import com.sunyard.util.TransOptionKey;
 import com.sunyard.ws.utils.XMLUtil;
-import lombok.extern.log4j.Log4j2;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -18,10 +18,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 import java.io.File;
 import java.util.Date;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
-@Log4j2
+@Slf4j
 @Service
 public class SUNECMService {
     //查询用
@@ -48,26 +49,26 @@ public class SUNECMService {
     @Autowired
     private PerformanceMonitorService performanceMonitor;
 
-    // 复用Socket连接，避免每次上传都新建TCP连接
-    private volatile SunEcmClientApi clientApi;
-    // 记录上次login时间，避免频繁login
-    private volatile long lastLoginTime = 0;
+    // 每个线程独立的Socket连接，解决多线程并发访问的线程安全问题
+    private final ThreadLocal<SunEcmClientApi> clientApiLocal = new ThreadLocal<>();
+    // 记录每个线程的上次login时间
+    private final ConcurrentHashMap<String, Long> threadLoginTimeMap = new ConcurrentHashMap<>();
     private static final long LOGIN_INTERVAL_MS = 5 * 60 * 1000; // 5分钟重新login一次
 
     @PostConstruct
     public void init() {
-        // @Value注入完成后再初始化clientApi，修复之前ip/port为0的bug
-        clientApi = new SunEcmClientSocketApiImpl(ip, socketPort);
-        log.info("初始化SUNECM连接 - 服务器[{}:{}]", ip, socketPort);
-        // 启动时先login一次
-        ensureLogin();
+        log.info("SUNECM连接池模式 - 每个线程独立连接服务器[{}:{}]", ip, socketPort);
+        // 初始化主线程连接
+        getClientApi();
     }
 
     @PreDestroy
     public void destroy() {
         try {
-            if (clientApi != null) {
-                clientApi.logout(userName);
+            SunEcmClientApi api = clientApiLocal.get();
+            if (api != null) {
+                api.logout(userName);
+                clientApiLocal.remove();
                 log.info("SUNECM连接已关闭");
             }
         } catch (Exception e) {
@@ -76,19 +77,35 @@ public class SUNECMService {
     }
 
     /**
-     * 确保已login，复用连接，避免每次上传都重新认证
+     * 获取当前线程的clientApi连接，若不存在则新建
+     */
+    private SunEcmClientApi getClientApi() {
+        SunEcmClientApi api = clientApiLocal.get();
+        if (api == null) {
+            api = new SunEcmClientSocketApiImpl(ip, socketPort);
+            clientApiLocal.set(api);
+            log.info("线程[{}]新建SUNECM连接 - 服务器[{}:{}]", Thread.currentThread().getName(), ip, socketPort);
+        }
+        return api;
+    }
+
+    /**
+     * 确保当前线程的connection已login，复用连接，避免每次上传都重新认证
      */
     private void ensureLogin() {
+        String threadName = Thread.currentThread().getName();
         long now = System.currentTimeMillis();
-        if (now - lastLoginTime < LOGIN_INTERVAL_MS) {
+        Long lastLogin = threadLoginTimeMap.get(threadName);
+        if (lastLogin != null && (now - lastLogin) < LOGIN_INTERVAL_MS) {
             return; // 已login且未过期，跳过
         }
         try {
-            clientApi.login(userName, password);
-            lastLoginTime = now;
-            log.info("SUNECM登录成功 - 用户[{}] 服务器[{}:{}]", userName, ip, socketPort);
+            SunEcmClientApi api = getClientApi();
+            api.login(userName, password);
+            threadLoginTimeMap.put(threadName, now);
+            log.info("线程[{}]SUNECM登录成功 - 用户[{}] 服务器[{}:{}]", threadName, userName, ip, socketPort);
         } catch (Exception e) {
-            log.error("SUNECM登录失败 - 服务器[{}:{}]", ip, socketPort, e);
+            log.error("线程[{}]SUNECM登录失败 - 服务器[{}:{}]", threadName, ip, socketPort, e);
         }
     }
 
@@ -102,7 +119,7 @@ public class SUNECMService {
 
     // 推送录音文件
     public String push(JSONObject data) {
-        log.info("inner向统一内容平台SUNECM推送录音文件" + data);
+        log.info("向统一内容平台SUNECM推送录音文件 - 录音ID[{}] 通话ID[{}]", data.getString("RECORDID"), data.getString("CONNID"));
         // 推送逻辑
         // 返回批次号
         String batchNo = ECMupload(data);
@@ -116,11 +133,13 @@ public class SUNECMService {
 
     public boolean logout() {
         try {
-            String resultMsg = clientApi.logout(userName);
-            log.debug("#######登出返回的信息[" + resultMsg + "]#######");
+            SunEcmClientApi api = getClientApi();
+            String resultMsg = api.logout(userName);
+            clientApiLocal.remove();
+            log.debug("登出返回信息: {}", resultMsg);
             return true;
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("SUNECM登出异常", e);
             return false;
         }
     }
@@ -141,6 +160,9 @@ public class SUNECMService {
                 data.getString("RECORDID"),
                 DateUtil.format(new Date(startTime), "yyyy-MM-dd HH:mm:ss.SSS"));
         
+        // 诊断日志：文件是否存在
+        log.info("[诊断] 录音文件路径: {}, 文件是否存在: {}, 文件大小: {} bytes", filePath, file.exists(), fileSize);
+        
         // 从data中解析录音信息
         //connid 通话CONNID VARCHAR2(20)
         //recordid 通话录音ID VARCHAR2(32)
@@ -158,9 +180,9 @@ public class SUNECMService {
         arry[0] = new File(filePath);
 
 
-        // 复用类级别的clientApi连接，避免每次上传都新建TCP连接
+        // 使用当前线程独立的clientApi连接，线程安全
         ensureLogin();
-        SunEcmClientApi api = clientApi;
+        SunEcmClientApi api = getClientApi();
         ClientBatchBean batchBean = new ClientBatchBean();
         batchBean.setUser(userName);
         batchBean.setPassWord(password);
@@ -191,7 +213,7 @@ public class SUNECMService {
         // RECDATETIME 转换为YYYYMMDD
         Date date = DateUtil.parseDate(data.getString("RECDATETIME"));
         batchIndexBean.addCustomMap("RECDATETIME", DateUtil.format(date, "yyyyMMdd"));
-//        log.warn("RECDATETIME: " + data.getString("RECDATETIME") + " -> " + DateUtil.format(date, "yyyyMMdd"));
+        log.debug("RECDATETIME转换: {} -> {}", data.getString("RECDATETIME"), DateUtil.format(date, "yyyyMMdd"));
         batchIndexBean.addCustomMap("ANI", data.getString("ANI"));
         batchIndexBean.addCustomMap("DN", data.getString("recordDN"));
         batchIndexBean.addCustomMap("AGENTID", data.getString("AGENTID"));
@@ -203,7 +225,9 @@ public class SUNECMService {
 
         //---------------添加文件---------------------
         String[] filename = arry[0].getName().split("\\.");
-        String format = filename[1];
+        String format = filename.length > 1 ? filename[filename.length - 1] : "";
+        log.info("[诊断] 文件名: {}, 解析格式: {}, fms配置: {}, 格式匹配结果: {}", 
+                arry[0].getName(), format, fms, fms.indexOf(format) > -1);
         if (fms.indexOf(format) > -1) {// 如果是指定格式的文件，则加入文档部件
             String nowFile = filePath;
             ClientFileBean bean = new ClientFileBean();
@@ -217,13 +241,20 @@ public class SUNECMService {
 
 
             batchFileBean.addFile(bean);
+            log.info("[诊断] 文件已加入批次 - 格式[{}] 大小[{}] 路径[{}]", format, arry[0].length(), nowFile);
+        } else {
+            log.error("[诊断] 文件格式不匹配，文件未加入批次! 格式[{}] 不在fms[{}]中", format, fms);
         }
         //-------------将文档索引信息和文档部件信息与批次信息关联-----
         batchBean.addDocument_Object(batchFileBean);
         batchBean.setIndex_Object(batchIndexBean);
+        log.info("[诊断] 上传前批次信息 - modelCode[{}] dmsName[{}] user[{}] serialNo[{}]", 
+                modelCode, dmsName, userName, batchIndexBean.getCustomMap().get("BUSI_SERIAL_NO"));
         String massage = "";
         try {
+            log.info("[诊断] 开始调用api.upload()...");
             massage = api.upload(batchBean, dmsName);//调用上传api接口
+            log.info("[诊断] api.upload()返回: {}", massage);
             
             // 记录结束时间并计算性能
             long endTime = System.currentTimeMillis();
@@ -254,8 +285,8 @@ public class SUNECMService {
         JSONObject retrunData = new JSONObject();
 
         try {
-            // 复用类级别的clientApi连接
-            SunEcmClientApi api = clientApi;
+            // 使用当前线程独立的clientApi连接，线程安全
+            SunEcmClientApi api = getClientApi();
             //--------以下为高级查询部分--------
             ClientHeightQuery heightQuery1 = new ClientHeightQuery();
             // 必要信息,设置登录名+登录密码
@@ -299,13 +330,11 @@ public class SUNECMService {
                 }
             } catch (Exception e) {
                 retrunData.put("exist", false);
-                log.error("批次查询异常 - 批次号[{}] 错误信息[{}]", BUSI_SERIAL_NO, e.getMessage());
-                e.printStackTrace();
+                log.error("批次查询异常 - 批次号[{}]", BUSI_SERIAL_NO, e);
             }
         } catch (Exception e) {
             retrunData.put("exist", false);
-            log.error("批次查询异常 - 批次号[{}] 错误信息[{}]", BUSI_SERIAL_NO, e.getMessage());
-            e.printStackTrace();
+            log.error("批次查询异常 - 批次号[{}]", BUSI_SERIAL_NO, e);
         }
         return retrunData;
     }
@@ -313,7 +342,7 @@ public class SUNECMService {
 
     public String appendFile(JSONObject recordData, JSONObject batchData) {
         String filePath = recordData.getString("RECORDFILEPATH");
-        log.info("data中解析到的文件路径：" + filePath);
+        log.info("追加文件到批次 - 文件路径[{}]", filePath);
         // 以下为上传逻辑
         int AMOUNT = 1;// 上传文件数目
         //将录音文件添加到数组中
@@ -321,9 +350,9 @@ public class SUNECMService {
         arry[0] = new File(filePath);
 
 
-        // 复用类级别的clientApi连接
+        // 使用当前线程独立的clientApi连接，线程安全
         ensureLogin();
-        SunEcmClientApi api = clientApi;
+        SunEcmClientApi api = getClientApi();
         ClientBatchBean batchBean = new ClientBatchBean();
         batchBean.setUser(userName);
         batchBean.setPassWord(password);
@@ -335,7 +364,7 @@ public class SUNECMService {
         batchBean.getIndex_Object().setContentID(batchData.getString("contentID"));// 设置影像批次ID
         batchBean.getIndex_Object().addCustomMap("BUSI_START_DATE", batchData.getString("busiStartDate"));// 设置业务开始时间
         batchBean.getIndex_Object().addCustomMap("AMOUNT", String.valueOf((Integer.parseInt(batchData.getString("amount")) + AMOUNT)));//设置该批次影像总数量 = 原Amount+本次上传影像件数量
-        log.info("更新影像批次信息" + batchBean.getIndex_Object().getContentID() + " " + batchBean.getIndex_Object().getCustomMap().get("AMOUNT"));
+        log.info("更新影像批次信息 - 内容ID[{}] 文件总数[{}]", batchBean.getIndex_Object().getContentID(), batchBean.getIndex_Object().getCustomMap().get("AMOUNT"));
         // 2024年2月22日14:56:38 补充录音自定义属性
         // 遍历data中所有的字段，检查是否为空，为空则重新赋值为pass
         for (String key : recordData.keySet()) {
@@ -372,12 +401,12 @@ public class SUNECMService {
         try {
             massage = api.update(batchBean, dmsName, true);//调用上传api接口
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("追加文件到批次异常 - 文件[{}]", filePath, e);
         }
         if (massage.startsWith("SUCCESS")) {
-            log.debug("api成功上传批次返回的信息[" + massage + "]");
+            log.info("追加文件到批次成功 - 返回信息[{}]", massage);
         } else {
-            log.error("api失败上传批次返回的信息[" + massage + "]");
+            log.error("追加文件到批次失败 - 返回信息[{}]", massage);
         }
         return massage;
     }

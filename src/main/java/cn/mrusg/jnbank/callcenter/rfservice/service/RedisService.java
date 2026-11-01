@@ -26,7 +26,12 @@ public class RedisService {
     }
 
     public boolean exists(String key) {
-        return this.redisTemplate.hasKey(key);
+        try {
+            return this.redisTemplate.hasKey(key);
+        } catch (Exception e) {
+            log.error("Redis exists异常 - key[{}]", key, e);
+            return false;
+        }
     }
 
     public Long getExpire(String key) {
@@ -38,7 +43,11 @@ public class RedisService {
 
 
     public void set(String key, String value) {
-        this.redisTemplate.opsForValue().set(key, value);
+        try {
+            this.redisTemplate.opsForValue().set(key, value);
+        } catch (Exception e) {
+            log.error("Redis set异常 - key[{}]", key, e);
+        }
     }
 
 
@@ -48,19 +57,31 @@ public class RedisService {
 
 
     public String get(String key) {
-        return this.redisTemplate.opsForValue().get(key);
+        try {
+            return this.redisTemplate.opsForValue().get(key);
+        } catch (Exception e) {
+            log.error("Redis get异常 - key[{}]", key, e);
+            return null;
+        }
     }
 
     public void del(String key) {
-        if (this.exists(key)) {
-            this.redisTemplate.delete(key);
+        try {
+            if (this.exists(key)) {
+                this.redisTemplate.delete(key);
+            }
+        } catch (Exception e) {
+            log.error("Redis del异常 - key[{}]", key, e);
         }
-
     }
 
     public void setAndExpire(String key, String value, long seconds) {
-        this.redisTemplate.opsForValue().set(key, value);
-        this.redisTemplate.expire(key, seconds, TimeUnit.SECONDS);
+        try {
+            this.redisTemplate.opsForValue().set(key, value);
+            this.redisTemplate.expire(key, seconds, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.error("Redis setAndExpire异常 - key[{}] seconds[{}]", key, seconds, e);
+        }
     }
 
 

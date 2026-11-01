@@ -98,7 +98,7 @@ public class FileListener extends FileAlterationListenerAdaptor {
     @SneakyThrows
     @Override
     public void onFileCreate(File file) {
-        log.info("[新建]:" + file.getAbsolutePath());
+        log.info("[新建] {}", file.getAbsolutePath());
         
         if (!FileUtil.getSuffix(file).equals("json")) {
             return;
@@ -260,10 +260,10 @@ public class FileListener extends FileAlterationListenerAdaptor {
      */
     @Override
     public void onFileChange(File file) {
-        log.info("[修改]:" + file.getAbsolutePath());
+        log.info("[修改] {}", file.getAbsolutePath());
         //读取文件内容
         try (BufferedReader buf = new BufferedReader(new InputStreamReader(new FileInputStream(file), "UTF-8"))) {
-            log.info(buf.readLine());
+            log.debug("文件修改内容: {}", buf.readLine());
         } catch (IOException e) {
             log.error("读取修改文件内容异常", e);
         }
@@ -274,7 +274,7 @@ public class FileListener extends FileAlterationListenerAdaptor {
      */
     @Override
     public void onFileDelete(File file) {
-        log.info("[删除]:" + file.getAbsolutePath());
+        log.info("[删除] {}", file.getAbsolutePath());
     }
 
     /**
@@ -282,7 +282,7 @@ public class FileListener extends FileAlterationListenerAdaptor {
      */
     @Override
     public void onDirectoryCreate(File directory) {
-        log.info("[新建]:" + directory.getAbsolutePath());
+        log.info("[新建目录] {}", directory.getAbsolutePath());
     }
 
     /**
@@ -290,7 +290,7 @@ public class FileListener extends FileAlterationListenerAdaptor {
      */
     @Override
     public void onDirectoryChange(File directory) {
-        log.info("[修改]:" + directory.getAbsolutePath());
+        log.info("[修改目录] {}", directory.getAbsolutePath());
     }
 
     /**
@@ -298,7 +298,7 @@ public class FileListener extends FileAlterationListenerAdaptor {
      */
     @Override
     public void onDirectoryDelete(File directory) {
-        log.info("[删除]:" + directory.getAbsolutePath());
+        log.info("[删除目录] {}", directory.getAbsolutePath());
     }
 
     @Override
